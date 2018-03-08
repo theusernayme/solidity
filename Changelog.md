@@ -4,6 +4,7 @@ Features:
 
 
 Bugfixes:
+ * Code Generator: Do not include internal functions in the runtime bytecode which are only referenced in the constructor.
 
 
 

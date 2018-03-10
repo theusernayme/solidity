@@ -17,41 +17,13 @@
 
 #pragma once
 
-#include <iosfwd>
-#include <string>
-#include <vector>
-#include <utility>
-
-namespace dev
+namespace consoleColor
 {
-namespace solidity
-{
-namespace test
-{
-
-struct SyntaxTestExpectation
-{
-	std::string type;
-	std::string message;
-};
-
-struct SyntaxTest
-{
-	std::string source;
-	std::vector<SyntaxTestExpectation> expectations;
-};
-
-class SyntaxTestParser
-{
-public:
-	SyntaxTestParser() = default;
-
-	SyntaxTest parse(std::string const& _filename);
-private:
-	std::string parseSource(std::istream& _stream);
-	std::vector<SyntaxTestExpectation> parseExpectations(std::istream& _stream);
-};
-
-}
-}
+	constexpr char const* red() { return "\033[1;31m"; }
+	constexpr char const* green() { return "\033[1;32m"; }
+	constexpr char const* yellow() { return "\033[1;33m"; }
+	constexpr char const* cyan() { return "\033[1;36m"; }
+	constexpr char const* bold() { return "\033[1m"; }
+	constexpr char const* inverse() { return "\033[7m"; }
+	constexpr char const* reset() { return "\033[0m"; }
 }

@@ -16,7 +16,8 @@
 */
 
 #include <test/libsolidity/AnalysisFramework.h>
-#include <test/libsolidity/SyntaxTestParser.h>
+#include <test/libsolidity/SyntaxTest.h>
+#include <test/libsolidity/ConsoleColor.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
@@ -32,18 +33,6 @@ using namespace dev::solidity::test;
 using namespace std;
 namespace po = boost::program_options;
 namespace fs = boost::filesystem;
-
-namespace color
-{
-	bool noColor = false;
-	char const* red() { return noColor ? "" : "\033[1;31m"; }
-	char const* green() { return noColor ? "" : "\033[1;32m"; }
-	char const* yellow() { return noColor ? "" : "\033[1;33m"; }
-	char const* cyan() { return noColor ? "" : "\033[1;36m"; }
-	char const* bold() { return noColor ? "" : "\033[1m"; }
-	char const* inverse() { return noColor ? "" : "\033[7m"; }
-	char const* reset() { return noColor ? "" : "\033[0m"; }
-}
 
 #ifdef __unix__
 class DisableConsoleBuffering
@@ -74,216 +63,179 @@ private:
 class DisableConsoleBuffering {};
 #endif
 
-class SyntaxTestTool: test::AnalysisFramework
+class SyntaxTestTool
 {
 public:
 	SyntaxTestTool(string const& _name, fs::path const& _path)
 		: m_name(_name), m_path(_path)
 	{}
 
-	bool process();
+	bool process(int& _successCount);
 
-	static bool processPath(fs::path const& _basepath, fs::path const& _path);
+	static bool processPath(
+		fs::path const& _basepath,
+		fs::path const& _path,
+		int& _successCount,
+		int& _runCount
+	);
 
 	static string editor;
+	static bool noColor;
 private:
-	static string errorMessage(Error const& _e)
-	{
-		if (_e.comment())
-			return boost::replace_all_copy(*_e.comment(), "\n", "\\n");
-		else
-			return "NONE";
-	}
-	static int getLineNumber(string const& _source, int _location);
+	bool handleResponse(int& _successCount, bool const _parserError);
 
 	void printContract() const;
-	void printExpected() const;
-	void printErrorList(ErrorList const& _errorList, bool const _parserError) const;
 
 	string const m_name;
 	fs::path const m_path;
-	SyntaxTest m_test;
+	unique_ptr<SyntaxTest> m_test;
 };
 
+bool SyntaxTestTool::noColor = false;
 string SyntaxTestTool::editor;
-
-int SyntaxTestTool::getLineNumber(string const& _source, int _location)
-{
-	// parseAnalyseAndReturnError(...) prepends a version pragma
-	_location -= strlen("pragma solidity >=0.0;\n");
-	if (_location < 0)
-		return -1;
-	else
-	{
-		int line = 1;
-		if (static_cast<size_t>(_location) >= _source.size())
-			return -1;
-		for (int i = 0; i < _location; i++)
-			if (_source[i] == '\n')
-				++line;
-		return line;
-	}
-}
 
 void SyntaxTestTool::printContract() const
 {
-	stringstream stream(m_test.source);
+	stringstream stream(m_test->source());
 	string line;
-	cout << color::cyan();
+	if (!noColor)
+		cout << consoleColor::cyan();
 	while (getline(stream, line))
 	{
 		cout << "    " << line << endl;
 	}
-	cout << color::reset() << endl;
+	if (!noColor)
+		cout << consoleColor::reset();
+	cout << endl;
 }
 
-void SyntaxTestTool::printExpected() const
+bool SyntaxTestTool::process(int& _successCount)
 {
-	if (m_test.expectations.empty())
-		cout << color::green() << "    Success" << color::reset() << endl;
-	else
-		for (auto const &expectation: m_test.expectations)
-		{
-			cout << (expectation.type == "Warning" ? color::yellow() : color::red())
-				 << "    " << expectation.type << ": " << expectation.message
-				 << color::reset() << endl;
-		}
-}
-
-void SyntaxTestTool::printErrorList(ErrorList const& _errorList, bool const _parserError) const
-{
-	if (_errorList.empty())
-		cout << color::green() << "    Success" << color::reset() << endl;
-	else
-		for (auto &error: _errorList)
-		{
-			if (error->typeName() == "Warning")
-			{
-				if (_parserError) continue;
-				cout << color::yellow();
-			}
-			else
-				cout << color::red();
-
-			cout << "    ";
-			if (_parserError)
-			{
-				int line = getLineNumber(
-					m_test.source,
-					boost::get_error_info<errinfo_sourceLocation>(*error)->start
-				);
-				if (line >= 0)
-					cout << "(" << line << "): ";
-			}
-			cout << error->typeName() << ": " << errorMessage(*error) << color::reset() << endl;
-		}
-}
-
-bool SyntaxTestTool::process()
-{
-	bool match = true;
+	bool success;
 	bool parserError = false;
-	ErrorList errorList;
+	std::stringstream outputMessages;
 
-	m_test = SyntaxTestParser().parse(m_path.string());
+	if (!noColor)
+		cout << consoleColor::bold();
+	cout << m_name << ": ";
+	if (!noColor)
+		cout << consoleColor::reset();
+	cout.flush();
 
 	try
 	{
-		errorList = parseAnalyseAndReturnError(m_test.source, true, true, true).second;
+		m_test = unique_ptr<SyntaxTest>(new SyntaxTest(m_path.string()));
+	}
+	catch (std::exception const& e)
+	{
+		if (!noColor)
+			cout << consoleColor::red();
+		cout << "cannot read test" << endl;
+		if (!noColor)
+			cout << consoleColor::reset();
+		return true;
+	}
 
-		if (errorList.size() != m_test.expectations.size())
-			match = false;
-		else
-		{
-			for (size_t i = 0; i < errorList.size(); i++)
-			{
-				if (!(errorList[i]->typeName() == m_test.expectations[i].type) ||
-					!(errorMessage(*errorList[i]) == m_test.expectations[i].message))
-				{
-					match = false;
-					break;
-				}
-			}
-		}
+	try
+	{
+		success = m_test->run(outputMessages, "  ", !noColor);
 	}
 	catch (...)
 	{
-		match = false;
+		success = false;
 		parserError = true;
-		errorList = m_compiler.errors();
 	}
 
-	cout << color::bold() << m_name << ": " << color::reset();
-
-	if (match)
-		cout << color::green() << "OK" << color::reset() << endl;
+	if (success)
+	{
+		if (!noColor)
+			cout << consoleColor::green();
+		cout << "OK";
+		if (!noColor)
+			cout << consoleColor::reset();
+		cout << endl;
+		++_successCount;
+		return true;
+	}
 	else
 	{
-		cout << color::red() << "FAILED" << color::reset() << endl;
+		if (!noColor)
+			cout << consoleColor::red();
+		cout << "FAIL";
+		if (!noColor)
+			cout << consoleColor::reset();
+		cout << endl;
 
 		cout << "  Contract:" << endl;
 		printContract();
 
 		if (parserError)
 		{
-			cout << "  " << color::inverse() << color::red() << "Parsing failed:" << color::reset() << endl;
-			printErrorList(errorList, true);
+			cout << "  ";
+			if (!noColor)
+				cout << consoleColor::inverse() << consoleColor::red();
+			cout << "Parsing failed:" << endl;
+			if (!noColor)
+				cout << consoleColor::reset();
+			m_test->printErrorList(cout, m_test->compilerErrors(), "    ", !noColor, true, true);
+			cout << endl;
 		}
 		else
 		{
-			cout << "  Expected result:" << endl;
-			printExpected();
-			cout << "  Obtained result:" << endl;
-			printErrorList(errorList, false);
+			cout << outputMessages.str() << endl;
 		}
-		cout << endl;
 
-		if (parserError)
-			cout << "(e)dit/(s)kip/(q)uit? ";
-		else
-			cout << "(e)dit/(r)eplace/(s)kip/(q)uit? ";
-		cout.flush();
-
-		bool done = false;
-		while (!done)
-		{
-			switch(cin.get())
-			{
-				case 's':
-					done = true;
-					break;
-				case 'r':
-					if (!parserError)
-					{
-						ofstream file(m_path.string(), ios::trunc);
-
-						file << m_test.source;
-						file << "// ----" << endl;
-						for (auto &error: errorList)
-							file << "// " << error->typeName() << ": " << errorMessage(*error) << endl;
-
-						done = true;
-					}
-					break;
-				case 'e':
-					cout << endl << endl;
-					if (system((editor + " " + m_path.string()).c_str()))
-						cerr << color::red() << "Error running editor command." << color::reset() << endl << endl;
-					return process();
-				case 'q':
-					cout << endl;
-					return false;
-				default:
-					break;
-			}
-		}
-		cout << endl << endl;
+		return handleResponse(_successCount, parserError);
 	}
-	return true;
-
 }
 
-bool SyntaxTestTool::processPath(fs::path const& _basepath, fs::path const& _path)
+bool SyntaxTestTool::handleResponse(int& _successCount, bool const _parserError)
+{
+	if (_parserError)
+		cout << "(e)dit/(s)kip/(q)uit? ";
+	else
+		cout << "(e)dit/(r)eplace/(s)kip/(q)uit? ";
+	cout.flush();
+
+	while (true)
+	{
+		switch(cin.get())
+		{
+			case 's':
+				cout << endl;
+				return true;
+			case 'r':
+				cout << endl;
+				if (!_parserError)
+				{
+					ofstream file(m_path.string(), ios::trunc);
+					file << m_test->source();
+					file << "// ----" << endl;
+					if (!m_test->errorList().empty())
+						m_test->printErrorList(file, m_test->errorList(), "// ", false, false, false);
+				}
+				return process(_successCount);
+			case 'e':
+				cout << endl << endl;
+				if (system((editor + " " + m_path.string()).c_str()))
+					cerr << "Error running editor command." << endl << endl;
+				return process(_successCount);
+			case 'q':
+				cout << endl;
+				return false;
+			default:
+				break;
+		}
+	}
+}
+
+
+bool SyntaxTestTool::processPath(
+	fs::path const& _basepath,
+	fs::path const& _path,
+	int& _successCount,
+	int& _runCount
+)
 {
 	fs::path fullpath = _basepath / _path;
 	if (fs::is_directory(fullpath))
@@ -292,13 +244,14 @@ bool SyntaxTestTool::processPath(fs::path const& _basepath, fs::path const& _pat
 			fs::directory_iterator(fullpath),
 			fs::directory_iterator()
 		))
-			if (!processPath(_basepath, _path / entry.path().filename()))
+			if (!processPath(_basepath, _path / entry.path().filename(), _successCount, _runCount))
 				return false;
 	}
 	else
 	{
 		SyntaxTestTool testTool(_path.string(), fullpath);
-		if (!testTool.process())
+		++_runCount;
+		if (!testTool.process(_successCount))
 			return false;
 	}
 	return true;
@@ -326,7 +279,7 @@ Allowed options)",
 		("testpath", po::value<fs::path>(&testPath)->required(), "path to test files")
 		(
 			"no-color",
-			po::bool_switch(&color::noColor)->default_value(false),
+			po::bool_switch(&SyntaxTestTool::noColor)->default_value(false),
 			"use colors (must be supported by the terminal)"
 		)
 		("editor", po::value<string>(&SyntaxTestTool::editor), "editor for opening contracts");
@@ -348,12 +301,31 @@ Allowed options)",
 	if (arguments.count("help"))
 		cout << options;
 	else if (fs::exists(testPath) && fs::is_directory(testPath))
-		SyntaxTestTool::processPath(testPath / "libsolidity", "syntaxTests");
+	{
+		int runCount = 0;
+		int successCount = 0;
+		SyntaxTestTool::processPath(testPath / "libsolidity", "syntaxTests", successCount, runCount);
+
+		cout << endl << "Summary: ";
+		if (!SyntaxTestTool::noColor)
+		{
+			if (runCount == successCount)
+				cout << consoleColor::green();
+			else
+				cout << consoleColor::red();
+		}
+		cout << successCount << "/" << runCount;
+		if (!SyntaxTestTool::noColor)
+		{
+			cout << consoleColor::reset();
+		}
+		cout << " tests successful." << endl;
+
+		return (runCount == successCount) ? 0 : 1;
+	}
 	else
 	{
 		cerr << "test path does not exist" << endl;
 		return 1;
 	}
-
-	return 0;
 }
